@@ -1,4 +1,7 @@
-use crate::launcher::{LauncherPaths, MinecraftLaunchConfig};
+use crate::{
+    auth::MinecraftSession,
+    launcher::{LauncherPaths, MinecraftLaunchConfig},
+};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{collections::HashMap, io::Read, path::Path};
@@ -209,12 +212,16 @@ where
     }
 }
 
-pub async fn prepare_default_instance(paths: &LauncherPaths) -> Result<(), BootstrapError> {
-    prepare_default_instance_with_progress(paths, |_| {}).await
+pub async fn prepare_default_instance(
+    paths: &LauncherPaths,
+    session: &MinecraftSession,
+) -> Result<(), BootstrapError> {
+    prepare_default_instance_with_progress(paths, session, |_| {}).await
 }
 
 pub async fn prepare_default_instance_with_progress<F>(
     paths: &LauncherPaths,
+    session: &MinecraftSession,
     progress: F,
 ) -> Result<(), BootstrapError>
 where
@@ -339,11 +346,11 @@ where
             "-Djava.library.path=natives".into(),
             "-Dorg.lwjgl.librarypath=natives".into(),
             "-Dminecraft.launcher.brand=TownRise".into(),
-            "-Dminecraft.launcher.version=0.1.4".into(),
+            "-Dminecraft.launcher.version=0.1.5".into(),
         ],
         classpath,
         main_class: details.main_class.clone(),
-        game_args: game_args(&details),
+        game_args: game_args(&details, session),
     };
 
     let raw = serde_json::to_string_pretty(&config)?;
@@ -452,16 +459,22 @@ fn common_zip_root(archive: &mut zip::ZipArchive<std::fs::File>) -> Option<Strin
     root
 }
 
-fn game_args(details: &VersionDetails) -> Vec<String> {
+fn game_args(details: &VersionDetails, session: &MinecraftSession) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(arguments) = &details.arguments {
         for argument in &arguments.game {
             match argument {
-                ArgumentValue::Plain(value) => args.push(substitute_arg(value, details)),
+                ArgumentValue::Plain(value) => args.push(substitute_arg(value, details, session)),
                 ArgumentValue::Conditional { rules, value } if rules_allow(rules) => match value {
-                    ArgumentPayload::One(value) => args.push(substitute_arg(value, details)),
+                    ArgumentPayload::One(value) => {
+                        args.push(substitute_arg(value, details, session))
+                    }
                     ArgumentPayload::Many(values) => {
-                        args.extend(values.iter().map(|value| substitute_arg(value, details)));
+                        args.extend(
+                            values
+                                .iter()
+                                .map(|value| substitute_arg(value, details, session)),
+                        );
                     }
                 },
                 _ => {}
@@ -471,23 +484,23 @@ fn game_args(details: &VersionDetails) -> Vec<String> {
         args.extend(
             legacy
                 .split_whitespace()
-                .map(|value| substitute_arg(value, details)),
+                .map(|value| substitute_arg(value, details, session)),
         );
     }
     args
 }
 
-fn substitute_arg(raw: &str, details: &VersionDetails) -> String {
-    raw.replace("${auth_player_name}", "TownRisePlayer")
+fn substitute_arg(raw: &str, details: &VersionDetails, session: &MinecraftSession) -> String {
+    raw.replace("${auth_player_name}", &session.username)
         .replace("${version_name}", &format!("TownRise-{}", details.id))
         .replace("${game_directory}", ".")
         .replace("${assets_root}", "assets")
         .replace("${assets_index_name}", &details.asset_index.id)
-        .replace("${auth_uuid}", "00000000-0000-0000-0000-000000000000")
-        .replace("${auth_access_token}", "0")
-        .replace("${clientid}", "0")
-        .replace("${auth_xuid}", "0")
-        .replace("${user_type}", "legacy")
+        .replace("${auth_uuid}", &session.uuid)
+        .replace("${auth_access_token}", &session.access_token)
+        .replace("${clientid}", &session.xuid)
+        .replace("${auth_xuid}", &session.xuid)
+        .replace("${user_type}", "msa")
         .replace("${version_type}", "release")
 }
 
@@ -698,8 +711,16 @@ mod tests {
             minecraft_arguments: None,
         };
 
+        let session = MinecraftSession {
+            username: "TownRisePlayer".into(),
+            uuid: "00000000000000000000000000000000".into(),
+            access_token: "token".into(),
+            xuid: "xuid".into(),
+            expires_at: 9999999999,
+        };
+
         assert_eq!(
-            game_args(&details),
+            game_args(&details, &session),
             vec!["--username", "TownRisePlayer", "--assetIndex", "17"]
         );
     }

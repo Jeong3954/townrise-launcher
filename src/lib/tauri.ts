@@ -43,6 +43,26 @@ export type LauncherSelfUpdateProgress = {
   totalBytes?: number;
 };
 
+export type MinecraftSession = {
+  username: string;
+  uuid: string;
+  accessToken: string;
+  xuid: string;
+  expiresAt: number;
+};
+
+export type LoginStart = {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete: string | null;
+  expiresIn: number;
+  interval: number;
+  message: string;
+};
+
+export type LoginPollStatus = "Pending" | "SlowDown" | { Complete: MinecraftSession };
+
 const fallbackPlan: UpdatePlan = {
   version: "확인 전",
   updateRequired: false,
@@ -135,6 +155,38 @@ export async function onMinecraftBootstrapProgress(
   return listen<UpdateProgress>("minecraft-bootstrap-progress", (event) =>
     callback(event.payload),
   );
+}
+
+export async function currentMinecraftSession(): Promise<MinecraftSession | null> {
+  if (!isTauri()) return null;
+  return invoke<MinecraftSession | null>("current_minecraft_session");
+}
+
+export async function beginMicrosoftLogin(): Promise<LoginStart> {
+  if (!isTauri()) {
+    return {
+      deviceCode: "dev-preview",
+      userCode: "DEV-PREVIEW",
+      verificationUri: "https://www.microsoft.com/link",
+      verificationUriComplete: null,
+      expiresIn: 900,
+      interval: 5,
+      message: "Tauri 앱에서 Microsoft 로그인을 사용할 수 있습니다.",
+    };
+  }
+  return invoke<LoginStart>("begin_microsoft_login");
+}
+
+export async function pollMicrosoftLogin(
+  deviceCode: string,
+): Promise<LoginPollStatus> {
+  if (!isTauri()) return "Pending";
+  return invoke<LoginPollStatus>("poll_microsoft_login", { deviceCode });
+}
+
+export async function logoutMinecraft(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("logout_minecraft");
 }
 
 export async function launchGame(): Promise<number> {

@@ -74,6 +74,10 @@ impl LauncherPaths {
     pub fn launch_config_path(&self) -> PathBuf {
         self.instance_dir.join("launch.json")
     }
+
+    pub fn auth_session_path(&self) -> PathBuf {
+        self.root_dir.join("auth-session.json")
+    }
 }
 
 pub fn read_launch_config(path: &Path) -> Result<MinecraftLaunchConfig, LaunchError> {

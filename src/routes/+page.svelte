@@ -1,29 +1,38 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
+    beginMicrosoftLogin,
     checkForUpdates,
     closeWindow,
+    currentMinecraftSession,
     installLauncherSelfUpdate,
     installUpdates,
     launchGame,
+    logoutMinecraft,
     minimizeWindow,
     onMinecraftBootstrapProgress,
     onUpdateProgress,
+    pollMicrosoftLogin,
     startWindowDrag,
     type InstallSummary,
     type LauncherSelfUpdateProgress,
+    type LoginStart,
+    type MinecraftSession,
     type UpdatePlan,
     type UpdateProgress
   } from '$lib/tauri';
 
-  type LauncherState = 'idle' | 'checking' | 'ready' | 'updating' | 'updated' | 'launching' | 'error';
-  type ScreenState = 'booting' | 'updating' | 'main' | 'error';
+  type LauncherState = 'idle' | 'checking' | 'ready' | 'updating' | 'updated' | 'launching' | 'login' | 'error';
+  type ScreenState = 'booting' | 'updating' | 'login' | 'main' | 'error';
 
   let screen: ScreenState = 'booting';
   let state: LauncherState = 'checking';
   let plan: UpdatePlan | null = null;
   let summary: InstallSummary | null = null;
   let progress: UpdateProgress | null = null;
+  let authSession: MinecraftSession | null = null;
+  let loginStart: LoginStart | null = null;
+  let loginPolling = false;
   let message = 'TownRise 런처 업데이트를 확인하고 있습니다.';
 
   const stateLabel: Record<LauncherState, string> = {
@@ -33,6 +42,7 @@
     updating: '업데이트 중',
     updated: '최신 상태',
     launching: '실행 중',
+    login: '로그인 필요',
     error: '확인 필요'
   };
 
@@ -74,6 +84,14 @@
       message = '실행 전에 필요한 업데이트를 확인하고 있습니다.';
       plan = await checkForUpdates();
       if (!plan.updateRequired) {
+        authSession = await currentMinecraftSession();
+        if (!authSession) {
+          state = 'login';
+          message = 'Microsoft 계정으로 로그인하면 정품 Minecraft 세션으로 실행합니다.';
+          screen = 'login';
+          return;
+        }
+
         state = 'updated';
         message = '최신 상태입니다. 바로 입장할 수 있습니다.';
         screen = 'main';
@@ -96,6 +114,13 @@
       };
       state = 'updated';
       message = '업데이트가 완료되었습니다.';
+      authSession = await currentMinecraftSession();
+      if (!authSession) {
+        state = 'login';
+        message = '업데이트가 완료되었습니다. Microsoft 계정으로 로그인해 주세요.';
+        screen = 'login';
+        return;
+      }
       screen = 'main';
     } catch (error) {
       state = 'error';
@@ -127,12 +152,69 @@
       state = 'updated';
       message = '업데이트가 완료되었습니다.';
       plan = await checkForUpdates();
-      screen = 'main';
+      authSession = await currentMinecraftSession();
+      screen = authSession ? 'main' : 'login';
+      if (!authSession) {
+        state = 'login';
+        message = 'Microsoft 계정으로 로그인해 주세요.';
+      }
     } catch (error) {
       state = 'error';
       screen = 'error';
       message = friendlyError(error);
     }
+  }
+
+  async function onBeginLogin() {
+    state = 'login';
+    loginPolling = false;
+    message = 'Microsoft 로그인 코드를 요청하고 있습니다.';
+    try {
+      loginStart = await beginMicrosoftLogin();
+      message = '브라우저에서 Microsoft 로그인을 완료해 주세요.';
+      pollLoginUntilComplete(loginStart.deviceCode, loginStart.interval);
+    } catch (error) {
+      state = 'error';
+      message = friendlyError(error);
+    }
+  }
+
+  async function pollLoginUntilComplete(deviceCode: string, intervalSeconds: number) {
+    loginPolling = true;
+    let waitSeconds = Math.max(2, intervalSeconds);
+    while (loginPolling) {
+      await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+      try {
+        const result = await pollMicrosoftLogin(deviceCode);
+        if (result === 'Pending') {
+          message = '아직 승인 대기 중입니다. Microsoft 로그인 창을 확인해 주세요.';
+          continue;
+        }
+        if (result === 'SlowDown') {
+          waitSeconds += 5;
+          message = 'Microsoft 요청 제한으로 잠시 후 다시 확인합니다.';
+          continue;
+        }
+        authSession = result.Complete;
+        loginPolling = false;
+        state = 'updated';
+        message = `${authSession.username} 계정으로 로그인되었습니다.`;
+        screen = 'main';
+      } catch (error) {
+        loginPolling = false;
+        state = 'error';
+        message = friendlyError(error);
+      }
+    }
+  }
+
+  async function onLogout() {
+    await logoutMinecraft();
+    authSession = null;
+    loginStart = null;
+    state = 'login';
+    message = '로그아웃했습니다. 다시 Microsoft 계정으로 로그인해 주세요.';
+    screen = 'login';
   }
 
   async function onLaunch() {
@@ -159,6 +241,10 @@
 
   function friendlyError(error: unknown) {
     const text = error instanceof Error ? error.message : String(error);
+    if (text.includes('Microsoft login client id')) return 'Microsoft 로그인 앱 ID가 아직 설정되지 않았습니다. 런처 데이터 폴더의 microsoft-client-id.txt 또는 TOWNRISE_MS_CLIENT_ID로 설정해야 합니다.';
+    if (text.includes('does not own Minecraft')) return '이 Microsoft 계정에는 Minecraft Java Edition 보유 기록이 없습니다.';
+    if (text.includes('Microsoft login is required')) return '게임 시작 전에 Microsoft 로그인이 필요합니다.';
+    if (text.includes('Minecraft profile is missing')) return 'Minecraft Java 프로필 이름이 없습니다. 공식 런처에서 프로필을 먼저 만들어 주세요.';
     if (text.includes('launch config is missing')) {
       return 'Minecraft 실행 설정을 만들지 못했습니다. Java 설치와 네트워크 상태를 확인해 주세요.';
     }
@@ -240,6 +326,37 @@
         </div>
       </section>
     </main>
+  {:else if screen === 'login'}
+    <main class="launcher-shell update-only-shell">
+      <section class="pixel-panel login-gate">
+        <div class="logo-block update-logo" aria-hidden="true">
+          <div class="grass"></div>
+          <div class="dirt"></div>
+          <div class="stone"></div>
+        </div>
+        <div>
+          <p class="eyebrow">Microsoft 로그인</p>
+          <h1>정품 계정으로<br />입장 준비</h1>
+          <p class="intro">{message}</p>
+        </div>
+        {#if loginStart}
+          <div class="login-code-card">
+            <span>입력 코드</span>
+            <strong>{loginStart.userCode}</strong>
+            <p>{loginStart.verificationUri} 에 접속해 코드를 입력하세요.</p>
+          </div>
+          {#if loginStart.verificationUriComplete}
+            <a class="pixel-button primary login-link" href={loginStart.verificationUriComplete} target="_blank" rel="noreferrer">Microsoft 로그인 열기</a>
+          {:else}
+            <a class="pixel-button primary login-link" href={loginStart.verificationUri} target="_blank" rel="noreferrer">Microsoft 로그인 열기</a>
+          {/if}
+          <p class="hint">로그인이 끝나면 런처가 자동으로 계정 확인을 완료합니다.</p>
+        {:else}
+          <button class="pixel-button primary" on:click={onBeginLogin}>Microsoft 계정으로 로그인</button>
+          <p class="hint">Microsoft OAuth → Xbox Live/XSTS → Minecraft Services 순서로 정품 Java 프로필을 확인합니다.</p>
+        {/if}
+      </section>
+    </main>
   {:else}
     <main class="launcher-shell">
       <div class="launcher-scroll">
@@ -275,7 +392,7 @@
               <button class="pixel-button" on:click={onInstall} disabled={!plan?.updateRequired || state === 'updating' || state === 'launching'}>
                 {state === 'updating' ? '설치 중...' : '업데이트 설치'}
               </button>
-              <button class="pixel-button primary" on:click={onLaunch} disabled={state === 'updating' || state === 'launching'}>{state === 'launching' ? '실행 중...' : '게임 시작'}</button>
+              <button class="pixel-button primary" on:click={onLaunch} disabled={!authSession || state === 'updating' || state === 'launching'}>{state === 'launching' ? '실행 중...' : '게임 시작'}</button>
             </div>
           </div>
 
@@ -304,9 +421,14 @@
           </div>
 
           <div class="pixel-panel server-panel">
-            <h2>서버 상태</h2>
-            <div class="server-line"><span class="online"></span><strong>준비 중</strong></div>
-            <p class="hint">정식 서버 상태 연동 전까지는 간단 상태만 표시합니다.</p>
+            <h2>계정</h2>
+            {#if authSession}
+              <div class="server-line"><span class="online"></span><strong>{authSession.username}</strong></div>
+              <p class="hint">Microsoft/Minecraft 세션으로 게임을 실행합니다.</p>
+              <button class="pixel-button secondary compact" on:click={onLogout}>로그아웃</button>
+            {:else}
+              <p class="hint">게임 시작 전에 Microsoft 로그인이 필요합니다.</p>
+            {/if}
           </div>
         </section>
       </div>
