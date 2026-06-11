@@ -212,11 +212,17 @@ mod tests {
         assert_eq!(command.working_directory, instance);
         assert_eq!(command.args[0], "-Xmx4G");
         assert!(command.args.contains(&"-cp".to_string()));
-        assert!(command
+        let classpath_arg = command
             .args
             .iter()
-            .any(|arg| arg.contains("libraries/a.jar")
-                && arg.contains("versions/townrise/client.jar")));
+            .find(|arg| arg.contains("libraries") && arg.contains("versions"))
+            .expect("classpath argument should include library and client jar paths");
+        assert!(classpath_arg.contains(&format!("libraries{}a.jar", std::path::MAIN_SEPARATOR)));
+        assert!(classpath_arg.contains(&format!(
+            "versions{}townrise{}client.jar",
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        )));
         assert!(command
             .args
             .contains(&"net.minecraft.client.main.Main".to_string()));
