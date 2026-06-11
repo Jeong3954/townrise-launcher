@@ -3,12 +3,14 @@
   import {
     checkForUpdates,
     closeWindow,
+    installLauncherSelfUpdate,
     installUpdates,
     launchGame,
     minimizeWindow,
     onUpdateProgress,
     startWindowDrag,
     type InstallSummary,
+    type LauncherSelfUpdateProgress,
     type UpdatePlan,
     type UpdateProgress
   } from '$lib/tauri';
@@ -49,10 +51,16 @@
   async function runStartupUpdate() {
     screen = 'booting';
     state = 'checking';
-    message = '실행 전에 필요한 업데이트를 확인하고 있습니다.';
+    message = '런처 업데이트를 확인하고 있습니다.';
     summary = null;
     progress = null;
     try {
+      const launcherUpdated = await installLauncherSelfUpdate((next) => {
+        message = launcherSelfUpdateMessage(next);
+      });
+      if (launcherUpdated) return;
+
+      message = '실행 전에 필요한 업데이트를 확인하고 있습니다.';
       plan = await checkForUpdates();
       if (!plan.updateRequired) {
         state = 'updated';
@@ -147,6 +155,16 @@
     if (next.phase === 'installed') return `${next.currentFile ?? '파일'} 설치 완료.`;
     if (next.phase === 'finished') return '업데이트 마무리 중입니다.';
     return '업데이트를 준비하고 있습니다.';
+  }
+
+  function launcherSelfUpdateMessage(next: LauncherSelfUpdateProgress) {
+    if (next.phase === 'checking') return '런처 새 버전을 확인하고 있습니다.';
+    if (next.phase === 'downloading') {
+      return next.version ? `런처 ${next.version} 버전을 다운로드하고 있습니다.` : '런처 업데이트를 다운로드하고 있습니다.';
+    }
+    if (next.phase === 'installing') return '런처 업데이트를 설치하고 있습니다.';
+    if (next.phase === 'restarting') return '런처 업데이트가 완료되어 다시 시작합니다.';
+    return '런처가 최신 상태입니다.';
   }
 
   function mb(bytes: number) {

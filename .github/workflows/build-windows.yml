@@ -50,6 +50,34 @@ jobs:
 
       - name: Build Tauri app
         run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Create updater metadata
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.release_tag }}"
+          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = "${{ github.ref_name }}" }
+          $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $setup = Get-ChildItem src-tauri/target/release/bundle -Recurse -Filter "*setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Windows setup.exe bundle was not found" }
+          $sigPath = "$($setup.FullName).sig"
+          if (-not (Test-Path $sigPath)) { throw "Updater signature was not found: $sigPath" }
+          $assetName = [uri]::EscapeDataString($setup.Name)
+          $metadata = [ordered]@{
+            version = $config.version
+            notes = "TownRise Launcher $($config.version)"
+            pub_date = (Get-Date).ToUniversalTime().ToString("o")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = (Get-Content $sigPath -Raw).Trim()
+                url = "https://github.com/Jeong3954/townrise-launcher/releases/download/$tag/$assetName"
+              }
+            }
+          }
+          $metadata | ConvertTo-Json -Depth 8 | Set-Content latest.json -Encoding utf8
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -58,7 +86,9 @@ jobs:
           path: |
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.sig
             src-tauri/target/release/townrise-launcher.exe
+            latest.json
 
       - name: Upload release assets
         if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
@@ -70,4 +100,6 @@ jobs:
           files: |
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.sig
             src-tauri/target/release/townrise-launcher.exe
+            latest.json
