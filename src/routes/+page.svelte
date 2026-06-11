@@ -12,6 +12,7 @@
     minimizeWindow,
     onMinecraftBootstrapProgress,
     onUpdateProgress,
+    openExternalUrl,
     pollMicrosoftLogin,
     startWindowDrag,
     type InstallSummary,
@@ -123,6 +124,17 @@
       }
       screen = 'main';
     } catch (error) {
+      try {
+        authSession = await currentMinecraftSession();
+        if (!authSession) {
+          state = 'login';
+          screen = 'login';
+          message = '업데이트 확인은 완료하지 못했지만, 먼저 Microsoft 로그인을 진행할 수 있습니다.';
+          return;
+        }
+      } catch {
+        // Fall through to the normal friendly error screen.
+      }
       state = 'error';
       screen = 'error';
       message = friendlyError(error);
@@ -166,6 +178,7 @@
   }
 
   async function onBeginLogin() {
+    screen = 'login';
     state = 'login';
     loginPolling = false;
     message = 'Microsoft 로그인 코드를 요청하고 있습니다.';
@@ -173,6 +186,18 @@
       loginStart = await beginMicrosoftLogin();
       message = '브라우저에서 Microsoft 로그인을 완료해 주세요.';
       pollLoginUntilComplete(loginStart.deviceCode, loginStart.interval);
+    } catch (error) {
+      state = 'error';
+      message = friendlyError(error);
+    }
+  }
+
+  async function onOpenLoginUrl() {
+    if (!loginStart) return;
+    const url = loginStart.verificationUriComplete ?? loginStart.verificationUri;
+    try {
+      await openExternalUrl(url);
+      message = '브라우저에서 Microsoft 로그인을 완료해 주세요.';
     } catch (error) {
       state = 'error';
       message = friendlyError(error);
@@ -218,6 +243,12 @@
   }
 
   async function onLaunch() {
+    if (!authSession) {
+      state = 'login';
+      screen = 'login';
+      message = '게임 시작 전에 Microsoft 계정으로 로그인해 주세요.';
+      return;
+    }
     try {
       state = 'launching';
       progress = {
@@ -301,8 +332,8 @@
       <strong data-tauri-drag-region>TownRise Launcher</strong>
     </div>
     <div class="window-actions">
-      <button class="window-button minimize" aria-label="최소화" on:pointerdown|stopPropagation on:click={minimizeWindow}>—</button>
-      <button class="window-button close" aria-label="닫기" on:pointerdown|stopPropagation on:click={closeWindow}>×</button>
+      <button class="window-button minimize" aria-label="최소화" on:pointerdown|stopPropagation on:mousedown|stopPropagation on:click|stopPropagation={minimizeWindow}>—</button>
+      <button class="window-button close" aria-label="닫기" on:pointerdown|stopPropagation on:mousedown|stopPropagation on:click|stopPropagation={closeWindow}>×</button>
     </div>
   </div>
 
@@ -345,11 +376,7 @@
             <strong>{loginStart.userCode}</strong>
             <p>{loginStart.verificationUri} 에 접속해 코드를 입력하세요.</p>
           </div>
-          {#if loginStart.verificationUriComplete}
-            <a class="pixel-button primary login-link" href={loginStart.verificationUriComplete} target="_blank" rel="noreferrer">Microsoft 로그인 열기</a>
-          {:else}
-            <a class="pixel-button primary login-link" href={loginStart.verificationUri} target="_blank" rel="noreferrer">Microsoft 로그인 열기</a>
-          {/if}
+          <button class="pixel-button primary login-link" on:click={onOpenLoginUrl}>Microsoft 로그인 열기</button>
           <p class="hint">로그인이 끝나면 런처가 자동으로 계정 확인을 완료합니다.</p>
         {:else}
           <button class="pixel-button primary" on:click={onBeginLogin}>Microsoft 계정으로 로그인</button>
@@ -428,6 +455,7 @@
               <button class="pixel-button secondary compact" on:click={onLogout}>로그아웃</button>
             {:else}
               <p class="hint">게임 시작 전에 Microsoft 로그인이 필요합니다.</p>
+              <button class="pixel-button primary compact" on:click={onBeginLogin}>Microsoft 로그인</button>
             {/if}
           </div>
         </section>
