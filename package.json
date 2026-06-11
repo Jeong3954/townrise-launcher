@@ -1,0 +1,31 @@
+{
+  "name": "townrise-launcher",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "lint": "prettier --check .",
+    "format": "prettier --write .",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@sveltejs/adapter-static": "latest",
+    "@sveltejs/kit": "latest",
+    "@sveltejs/vite-plugin-svelte": "latest",
+    "@tauri-apps/api": "latest",
+    "svelte": "latest",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "latest",
+    "@types/node": "^25.9.3",
+    "prettier": "latest",
+    "prettier-plugin-svelte": "latest",
+    "svelte-check": "latest",
+    "typescript": "latest"
+  }
+}
