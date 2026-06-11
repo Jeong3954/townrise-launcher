@@ -83,6 +83,7 @@ button:focus-visible {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent), #1b1a16;
   user-select: none;
+  cursor: default;
 }
 
 .window-brand {
@@ -117,6 +118,7 @@ button:focus-visible {
 .window-actions {
   height: 100%;
   display: flex;
+  flex: 0 0 auto;
 }
 
 .window-button {
@@ -128,6 +130,12 @@ button:focus-visible {
   cursor: pointer;
   font-size: 18px;
   line-height: 1;
+}
+
+.window-button.minimize {
+  font-size: 14px;
+  font-weight: 800;
+  padding-bottom: 5px;
 }
 
 .window-button:hover {

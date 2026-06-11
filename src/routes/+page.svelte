@@ -7,6 +7,7 @@
     launchGame,
     minimizeWindow,
     onUpdateProgress,
+    startWindowDrag,
     type InstallSummary,
     type UpdatePlan,
     type UpdateProgress
@@ -118,7 +119,7 @@
   async function onLaunch() {
     try {
       state = 'launching';
-      message = 'Minecraft를 실행하고 있습니다.';
+      message = 'Minecraft 실행 파일을 준비하고 있습니다. 첫 실행은 파일 다운로드 때문에 시간이 걸릴 수 있습니다.';
       const pid = await launchGame();
       state = 'updated';
       message = `Minecraft 프로세스를 시작했습니다. PID ${pid}`;
@@ -131,8 +132,10 @@
   function friendlyError(error: unknown) {
     const text = error instanceof Error ? error.message : String(error);
     if (text.includes('launch config is missing')) {
-      return 'Minecraft 실행 설정이 아직 없습니다. 업데이트 manifest에 instance/launch.json을 포함하면 런처가 바로 Java 프로세스를 실행합니다.';
+      return 'Minecraft 실행 설정을 만들지 못했습니다. Java 설치와 네트워크 상태를 확인해 주세요.';
     }
+    if (text.includes('metadata') || text.includes('bootstrap') || text.includes('download hash mismatch')) return 'Minecraft 실행 파일 준비에 실패했습니다. 네트워크 상태를 확인한 뒤 다시 시도해 주세요.';
+    if (text.includes('failed to start Minecraft process')) return 'Minecraft 실행에 실패했습니다. PC에 Java 21 이상이 설치되어 있는지 확인해 주세요.';
     if (text.includes('network') || text.includes('request') || text.includes('manifest request')) return '업데이트 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.';
     if (text.includes('hash mismatch') || text.includes('size mismatch')) return '업데이트 파일 검증에 실패했습니다. 안전을 위해 실행하지 않았습니다.';
     return '작업을 완료하지 못했습니다. 다시 시도해 주세요.';
@@ -159,16 +162,16 @@
 </svelte:head>
 
 <div class="app-window">
-  <header class="custom-titlebar" data-tauri-drag-region>
+  <div class="custom-titlebar" role="group" aria-label="창 조작" data-tauri-drag-region on:pointerdown={startWindowDrag}>
     <div class="window-brand" data-tauri-drag-region>
       <span class="mini-logo" aria-hidden="true"><span></span><span></span><span></span></span>
       <strong data-tauri-drag-region>TownRise Launcher</strong>
     </div>
     <div class="window-actions">
-      <button class="window-button" aria-label="최소화" on:click={minimizeWindow}>—</button>
-      <button class="window-button close" aria-label="닫기" on:click={closeWindow}>×</button>
+      <button class="window-button minimize" aria-label="최소화" on:pointerdown|stopPropagation on:click={minimizeWindow}>—</button>
+      <button class="window-button close" aria-label="닫기" on:pointerdown|stopPropagation on:click={closeWindow}>×</button>
     </div>
-  </header>
+  </div>
 
   {#if screen === 'booting' || screen === 'updating'}
     <main class="launcher-shell update-only-shell">
@@ -249,7 +252,7 @@
             <ul>
               <li>런처 시작 시 업데이트를 먼저 확인합니다.</li>
               <li>업데이트가 있으면 전용 업데이트 화면에서 설치합니다.</li>
-              <li>설치가 끝나면 메인 화면에서 Minecraft를 실행합니다.</li>
+              <li>게임 시작 시 Minecraft 1.21.1 실행 파일을 자동 준비한 뒤 실행합니다.</li>
             </ul>
           </div>
 

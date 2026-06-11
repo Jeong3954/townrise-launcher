@@ -1,8 +1,10 @@
 pub mod launcher;
 pub mod manifest;
+pub mod minecraft_bootstrap;
 pub mod updater;
 
 use launcher::{launch_minecraft, LauncherPaths};
+use minecraft_bootstrap::prepare_default_instance;
 use tauri::Emitter;
 use updater::{install_updates_to_with_progress, plan_updates};
 
@@ -35,6 +37,9 @@ async fn install_updates(app: tauri::AppHandle) -> Result<updater::InstallSummar
 #[tauri::command]
 async fn launch_game() -> Result<u32, String> {
     let paths = LauncherPaths::discover().map_err(|error| error.to_string())?;
+    prepare_default_instance(&paths)
+        .await
+        .map_err(|error| error.to_string())?;
     launch_minecraft(&paths).map_err(|error| error.to_string())
 }
 

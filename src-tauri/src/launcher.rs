@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
     path::{Component, Path, PathBuf},
@@ -22,7 +22,7 @@ pub enum LauncherPathError {
     CreateDirectory(#[from] std::io::Error),
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MinecraftLaunchConfig {
     pub java_executable: Option<String>,

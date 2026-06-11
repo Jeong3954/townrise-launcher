@@ -78,6 +78,11 @@ export async function minimizeWindow(): Promise<void> {
   await getCurrentWindow().minimize();
 }
 
+export async function startWindowDrag(): Promise<void> {
+  if (!isTauri()) return;
+  await getCurrentWindow().startDragging();
+}
+
 export async function closeWindow(): Promise<void> {
   if (!isTauri()) return;
   await getCurrentWindow().close();
