@@ -128,6 +128,15 @@ export async function onUpdateProgress(
   );
 }
 
+export async function onMinecraftBootstrapProgress(
+  callback: (progress: UpdateProgress) => void,
+): Promise<UnlistenFn> {
+  if (!isTauri()) return () => undefined;
+  return listen<UpdateProgress>("minecraft-bootstrap-progress", (event) =>
+    callback(event.payload),
+  );
+}
+
 export async function launchGame(): Promise<number> {
   if (!isTauri()) {
     throw new Error("브라우저 미리보기에서는 게임 실행을 사용할 수 없습니다.");

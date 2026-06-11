@@ -119,13 +119,27 @@ pub fn build_minecraft_command(
     args.extend(config.game_args.clone());
 
     Ok(MinecraftCommand {
-        program: config
-            .java_executable
-            .clone()
-            .unwrap_or_else(|| "java".to_string()),
+        program: java_program(config, instance_dir)?,
         args,
         working_directory,
     })
+}
+
+fn java_program(
+    config: &MinecraftLaunchConfig,
+    instance_dir: &Path,
+) -> Result<String, LaunchError> {
+    let Some(raw) = &config.java_executable else {
+        return Ok("java".to_string());
+    };
+    if raw.trim().is_empty() {
+        return Ok("java".to_string());
+    }
+    if raw == "java" || raw == "java.exe" {
+        return Ok(raw.clone());
+    }
+    let resolved = safe_instance_path(instance_dir, raw)?;
+    Ok(os_to_string(resolved.into_os_string()))
 }
 
 pub fn launch_minecraft(paths: &LauncherPaths) -> Result<u32, LaunchError> {

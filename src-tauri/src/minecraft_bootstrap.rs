@@ -1,5 +1,5 @@
 use crate::launcher::{LauncherPaths, MinecraftLaunchConfig};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{collections::HashMap, io::Read, path::Path};
 use thiserror::Error;
@@ -7,6 +7,19 @@ use thiserror::Error;
 const MINECRAFT_VERSION: &str = "1.21.1";
 const VERSION_MANIFEST_URL: &str =
     "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+const JAVA_RUNTIME_DIR: &str = "runtime/java-21";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BootstrapProgress {
+    pub phase: String,
+    pub current_file: Option<String>,
+    pub completed_files: usize,
+    pub total_files: usize,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub percent: u8,
+}
 
 #[derive(Debug, Error)]
 pub enum BootstrapError {
@@ -22,6 +35,10 @@ pub enum BootstrapError {
     HashMismatch { path: String },
     #[error("Minecraft native extraction failed: {0}")]
     Zip(#[from] zip::result::ZipError),
+    #[error("Minecraft Java 21 runtime is unavailable for this platform")]
+    UnsupportedJavaRuntime,
+    #[error("Minecraft Java 21 runtime did not contain a java executable")]
+    MissingJavaExecutable,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,10 +149,79 @@ struct AssetObject {
     size: u64,
 }
 
-pub async fn prepare_default_instance(paths: &LauncherPaths) -> Result<(), BootstrapError> {
-    if paths.launch_config_path().exists() {
-        return Ok(());
+struct ProgressReporter<F>
+where
+    F: FnMut(BootstrapProgress),
+{
+    callback: F,
+    completed_files: usize,
+    total_files: usize,
+}
+
+impl<F> ProgressReporter<F>
+where
+    F: FnMut(BootstrapProgress),
+{
+    fn new(callback: F) -> Self {
+        Self {
+            callback,
+            completed_files: 0,
+            total_files: 1,
+        }
     }
+
+    fn set_total(&mut self, total_files: usize) {
+        self.total_files = total_files.max(1);
+        self.emit("checking", None, 0, 0);
+    }
+
+    fn downloading(&mut self, current_file: impl Into<String>) {
+        self.emit("downloading", Some(current_file.into()), 0, 0);
+    }
+
+    fn installed(&mut self, current_file: impl Into<String>) {
+        self.completed_files = self.completed_files.saturating_add(1);
+        self.emit("installed", Some(current_file.into()), 0, 0);
+    }
+
+    fn finished(&mut self) {
+        self.completed_files = self.total_files;
+        self.emit("finished", None, 0, 0);
+    }
+
+    fn emit(
+        &mut self,
+        phase: &str,
+        current_file: Option<String>,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+    ) {
+        let percent = ((self.completed_files.min(self.total_files) * 100) / self.total_files) as u8;
+        (self.callback)(BootstrapProgress {
+            phase: phase.into(),
+            current_file,
+            completed_files: self.completed_files,
+            total_files: self.total_files,
+            downloaded_bytes,
+            total_bytes,
+            percent,
+        });
+    }
+}
+
+pub async fn prepare_default_instance(paths: &LauncherPaths) -> Result<(), BootstrapError> {
+    prepare_default_instance_with_progress(paths, |_| {}).await
+}
+
+pub async fn prepare_default_instance_with_progress<F>(
+    paths: &LauncherPaths,
+    progress: F,
+) -> Result<(), BootstrapError>
+where
+    F: FnMut(BootstrapProgress),
+{
+    let mut progress = ProgressReporter::new(progress);
+    progress.emit("checking", Some("Minecraft 메타데이터".into()), 0, 0);
 
     tokio::fs::create_dir_all(&paths.instance_dir).await?;
     tokio::fs::create_dir_all(paths.instance_dir.join("versions").join(MINECRAFT_VERSION)).await?;
@@ -161,6 +247,32 @@ pub async fn prepare_default_instance(paths: &LauncherPaths) -> Result<(), Boots
         .json()
         .await?;
 
+    let asset_index_bytes = download_bytes(&details.asset_index.url).await?;
+    verify_sha1_optional(
+        &asset_index_bytes,
+        details.asset_index.sha1.as_deref(),
+        "asset index",
+    )?;
+    let asset_index: AssetIndex = serde_json::from_slice(&asset_index_bytes)?;
+
+    let library_downloads = details
+        .libraries
+        .iter()
+        .filter(|library| rules_allow(&library.rules))
+        .filter_map(|library| library.downloads.artifact.as_ref())
+        .count();
+    let native_downloads = details
+        .libraries
+        .iter()
+        .filter(|library| rules_allow(&library.rules))
+        .filter_map(|library| {
+            native_key(library).and_then(|key| library.downloads.classifiers.get(&key))
+        })
+        .count();
+    progress.set_total(3 + library_downloads + native_downloads + asset_index.objects.len());
+
+    let java_executable = ensure_java_runtime(paths, &mut progress).await?;
+
     let mut classpath = Vec::new();
     for library in &details.libraries {
         if !rules_allow(&library.rules) {
@@ -173,7 +285,7 @@ pub async fn prepare_default_instance(paths: &LauncherPaths) -> Result<(), Boots
                 .clone()
                 .unwrap_or_else(|| maven_library_path(&library.name));
             let target = paths.instance_dir.join("libraries").join(&relative);
-            download_if_needed(artifact, &target).await?;
+            download_if_needed(artifact, &target, &relative, &mut progress).await?;
             classpath.push(format!("libraries/{}", relative.replace('\\', "/")));
         }
 
@@ -184,7 +296,7 @@ pub async fn prepare_default_instance(paths: &LauncherPaths) -> Result<(), Boots
                     .clone()
                     .unwrap_or_else(|| format!("natives/{native_key}.jar"));
                 let target = paths.instance_dir.join("libraries").join(&relative);
-                download_if_needed(native, &target).await?;
+                download_if_needed(native, &target, &relative, &mut progress).await?;
                 extract_natives(&target, &paths.instance_dir.join("natives"))?;
             }
         }
@@ -195,7 +307,13 @@ pub async fn prepare_default_instance(paths: &LauncherPaths) -> Result<(), Boots
         .join("versions")
         .join(MINECRAFT_VERSION)
         .join(format!("{MINECRAFT_VERSION}.jar"));
-    download_if_needed(&details.downloads.client, &client_path).await?;
+    download_if_needed(
+        &details.downloads.client,
+        &client_path,
+        &format!("Minecraft {MINECRAFT_VERSION} client"),
+        &mut progress,
+    )
+    .await?;
     classpath.push(format!(
         "versions/{MINECRAFT_VERSION}/{MINECRAFT_VERSION}.jar"
     ));
@@ -204,21 +322,16 @@ pub async fn prepare_default_instance(paths: &LauncherPaths) -> Result<(), Boots
         .instance_dir
         .join("assets/indexes")
         .join(format!("{}.json", details.asset_index.id));
-    let asset_index_bytes = download_bytes(&details.asset_index.url).await?;
-    verify_sha1_optional(
-        &asset_index_bytes,
-        details.asset_index.sha1.as_deref(),
-        "asset index",
-    )?;
     if let Some(parent) = asset_index_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     tokio::fs::write(&asset_index_path, &asset_index_bytes).await?;
-    let asset_index: AssetIndex = serde_json::from_slice(&asset_index_bytes)?;
-    download_assets(&asset_index, &paths.instance_dir).await?;
+    progress.installed("asset index");
+
+    download_assets(&asset_index, &paths.instance_dir, &mut progress).await?;
 
     let config = MinecraftLaunchConfig {
-        java_executable: Some("java".into()),
+        java_executable: Some(java_executable),
         working_directory: Some(".".into()),
         jvm_args: vec![
             "-Xmx4G".into(),
@@ -226,7 +339,7 @@ pub async fn prepare_default_instance(paths: &LauncherPaths) -> Result<(), Boots
             "-Djava.library.path=natives".into(),
             "-Dorg.lwjgl.librarypath=natives".into(),
             "-Dminecraft.launcher.brand=TownRise".into(),
-            "-Dminecraft.launcher.version=0.1.1".into(),
+            "-Dminecraft.launcher.version=0.1.4".into(),
         ],
         classpath,
         main_class: details.main_class.clone(),
@@ -235,7 +348,108 @@ pub async fn prepare_default_instance(paths: &LauncherPaths) -> Result<(), Boots
 
     let raw = serde_json::to_string_pretty(&config)?;
     tokio::fs::write(paths.launch_config_path(), raw).await?;
+    progress.finished();
     Ok(())
+}
+
+async fn ensure_java_runtime<F>(
+    paths: &LauncherPaths,
+    progress: &mut ProgressReporter<F>,
+) -> Result<String, BootstrapError>
+where
+    F: FnMut(BootstrapProgress),
+{
+    let java_relative = java_executable_relative_path()?;
+    let java_path = paths.instance_dir.join(&java_relative);
+    if java_path.exists() {
+        progress.installed("Java 21 런타임");
+        return Ok(java_relative);
+    }
+
+    let runtime_dir = paths.instance_dir.join(JAVA_RUNTIME_DIR);
+    let tmp_zip = paths.cache_dir.join("java-21-runtime.zip");
+    progress.downloading("Java 21 런타임");
+    let bytes = download_bytes(java_runtime_url()?).await?;
+    tokio::fs::create_dir_all(&paths.cache_dir).await?;
+    tokio::fs::write(&tmp_zip, bytes).await?;
+    if runtime_dir.exists() {
+        tokio::fs::remove_dir_all(&runtime_dir).await?;
+    }
+    tokio::fs::create_dir_all(&runtime_dir).await?;
+    extract_java_runtime_zip(&tmp_zip, &runtime_dir)?;
+    if !java_path.exists() {
+        return Err(BootstrapError::MissingJavaExecutable);
+    }
+    progress.installed("Java 21 런타임");
+    Ok(java_relative)
+}
+
+fn java_runtime_url() -> Result<&'static str, BootstrapError> {
+    if cfg!(target_os = "windows") {
+        Ok("https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jre/hotspot/normal/eclipse?project=jdk")
+    } else {
+        Err(BootstrapError::UnsupportedJavaRuntime)
+    }
+}
+
+fn java_executable_relative_path() -> Result<String, BootstrapError> {
+    if cfg!(target_os = "windows") {
+        Ok(format!("{JAVA_RUNTIME_DIR}/bin/java.exe"))
+    } else {
+        Err(BootstrapError::UnsupportedJavaRuntime)
+    }
+}
+
+fn extract_java_runtime_zip(zip_path: &Path, runtime_dir: &Path) -> Result<(), BootstrapError> {
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let root_prefix = common_zip_root(&mut archive);
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let name = entry.name().replace('\\', "/");
+        if name.ends_with('/') {
+            continue;
+        }
+        let relative = if let Some(prefix) = &root_prefix {
+            name.strip_prefix(prefix).unwrap_or(&name)
+        } else {
+            &name
+        };
+        if relative.is_empty() || relative.contains("..") {
+            continue;
+        }
+        let target = runtime_dir.join(relative);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)?;
+        std::fs::write(target, bytes)?;
+    }
+    Ok(())
+}
+
+fn common_zip_root(archive: &mut zip::ZipArchive<std::fs::File>) -> Option<String> {
+    let mut root: Option<String> = None;
+    for index in 0..archive.len() {
+        let Ok(entry) = archive.by_index(index) else {
+            continue;
+        };
+        let name = entry.name().replace('\\', "/");
+        let Some(first) = name.split('/').next() else {
+            continue;
+        };
+        if first.is_empty() {
+            continue;
+        }
+        let candidate = format!("{first}/");
+        match &root {
+            None => root = Some(candidate),
+            Some(existing) if existing == &candidate => {}
+            Some(_) => return None,
+        }
+    }
+    root
 }
 
 fn game_args(details: &VersionDetails) -> Vec<String> {
@@ -277,19 +491,20 @@ fn substitute_arg(raw: &str, details: &VersionDetails) -> String {
         .replace("${version_type}", "release")
 }
 
-async fn download_assets(
+async fn download_assets<F>(
     asset_index: &AssetIndex,
     instance_dir: &Path,
-) -> Result<(), BootstrapError> {
+    progress: &mut ProgressReporter<F>,
+) -> Result<(), BootstrapError>
+where
+    F: FnMut(BootstrapProgress),
+{
     for object in asset_index.objects.values() {
         let prefix = &object.hash[..2];
         let target = instance_dir
             .join("assets/objects")
             .join(prefix)
             .join(&object.hash);
-        if target.exists() {
-            continue;
-        }
         let url = format!(
             "https://resources.download.minecraft.net/{}/{}",
             prefix, object.hash
@@ -299,29 +514,47 @@ async fn download_assets(
             url,
             sha1: Some(object.hash.clone()),
         };
-        download_if_needed(&download, &target).await?;
+        download_if_needed(
+            &download,
+            &target,
+            &format!("asset/{}", object.hash),
+            progress,
+        )
+        .await?;
     }
     Ok(())
 }
 
-async fn download_if_needed(download: &DownloadInfo, target: &Path) -> Result<(), BootstrapError> {
+async fn download_if_needed<F>(
+    download: &DownloadInfo,
+    target: &Path,
+    label: &str,
+    progress: &mut ProgressReporter<F>,
+) -> Result<(), BootstrapError>
+where
+    F: FnMut(BootstrapProgress),
+{
     if target.exists() {
         if let Some(expected) = &download.sha1 {
             let bytes = tokio::fs::read(target).await?;
             if sha1_hex(&bytes).eq_ignore_ascii_case(expected) {
+                progress.installed(label.to_string());
                 return Ok(());
             }
         } else {
+            progress.installed(label.to_string());
             return Ok(());
         }
     }
 
+    progress.downloading(label.to_string());
     let bytes = download_bytes(&download.url).await?;
     verify_sha1_optional(&bytes, download.sha1.as_deref(), &download.url)?;
     if let Some(parent) = target.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     tokio::fs::write(target, bytes).await?;
+    progress.installed(label.to_string());
     Ok(())
 }
 

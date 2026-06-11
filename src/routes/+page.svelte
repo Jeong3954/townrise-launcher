@@ -7,6 +7,7 @@
     installUpdates,
     launchGame,
     minimizeWindow,
+    onMinecraftBootstrapProgress,
     onUpdateProgress,
     startWindowDrag,
     type InstallSummary,
@@ -37,15 +38,25 @@
 
   onMount(() => {
     let cleanup: () => void = () => undefined;
+    let cleanupBootstrap: () => void = () => undefined;
     onUpdateProgress((next) => {
       progress = next;
       message = progressMessage(next);
     }).then((unlisten) => {
       cleanup = unlisten;
     });
+    onMinecraftBootstrapProgress((next) => {
+      progress = next;
+      message = minecraftProgressMessage(next);
+    }).then((unlisten) => {
+      cleanupBootstrap = unlisten;
+    });
 
     runStartupUpdate();
-    return () => cleanup();
+    return () => {
+      cleanup();
+      cleanupBootstrap();
+    };
   });
 
   async function runStartupUpdate() {
@@ -127,6 +138,15 @@
   async function onLaunch() {
     try {
       state = 'launching';
+      progress = {
+        phase: 'checking',
+        currentFile: 'Minecraft 실행 파일',
+        completedFiles: 0,
+        totalFiles: 1,
+        downloadedBytes: 0,
+        totalBytes: 0,
+        percent: 0
+      };
       message = 'Minecraft 실행 파일을 준비하고 있습니다. 첫 실행은 파일 다운로드 때문에 시간이 걸릴 수 있습니다.';
       const pid = await launchGame();
       state = 'updated';
@@ -157,6 +177,14 @@
     return '업데이트를 준비하고 있습니다.';
   }
 
+  function minecraftProgressMessage(next: UpdateProgress) {
+    if (next.phase === 'checking') return `${next.currentFile ?? 'Minecraft 파일'} 확인 중입니다.`;
+    if (next.phase === 'downloading') return `${next.currentFile ?? 'Minecraft 파일'} 다운로드 중입니다.`;
+    if (next.phase === 'installed') return `${next.currentFile ?? 'Minecraft 파일'} 준비 완료.`;
+    if (next.phase === 'finished') return 'Minecraft 실행 준비가 완료되었습니다.';
+    return 'Minecraft 실행 파일을 준비하고 있습니다.';
+  }
+
   function launcherSelfUpdateMessage(next: LauncherSelfUpdateProgress) {
     if (next.phase === 'checking') return '런처 새 버전을 확인하고 있습니다.';
     if (next.phase === 'downloading') {
@@ -173,6 +201,7 @@
   }
 
   $: visibleProgress = progress?.percent ?? (screen === 'booting' ? 12 : 0);
+  $: mainPanelProgress = state === 'launching' ? visibleProgress : plan?.updateRequired ? 42 : 100;
 </script>
 
 <svelte:head>
@@ -180,7 +209,7 @@
 </svelte:head>
 
 <div class="app-window">
-  <div class="custom-titlebar" role="group" aria-label="창 조작" data-tauri-drag-region on:pointerdown={startWindowDrag}>
+  <div class="custom-titlebar" role="toolbar" tabindex="-1" aria-label="창 조작" data-tauri-drag-region on:mousedown={startWindowDrag}>
     <div class="window-brand" data-tauri-drag-region>
       <span class="mini-logo" aria-hidden="true"><span></span><span></span><span></span></span>
       <strong data-tauri-drag-region>TownRise Launcher</strong>
@@ -254,9 +283,9 @@
             <h2>패치 상태</h2>
             {#if plan}
               <div class="simple-row"><span>버전</span><strong>{plan.version}</strong></div>
-              <div class="simple-row"><span>필요 용량</span><strong>{mb(plan.totalDownloadSize)}</strong></div>
-              <div class="progress-track"><span style={`width: ${plan.updateRequired ? 42 : 100}%`}></span></div>
-              <p class="hint">{plan.updateRequired ? '업데이트 설치를 누르면 필요한 파일만 받습니다.' : '필요한 파일이 모두 준비되어 있습니다.'}</p>
+              <div class="simple-row"><span>필요 용량</span><strong>{state === 'launching' ? `${progress?.completedFiles ?? 0} / ${progress?.totalFiles ?? 1} 파일` : mb(plan.totalDownloadSize)}</strong></div>
+              <div class="progress-track"><span style={`width: ${mainPanelProgress}%`}></span></div>
+              <p class="hint">{state === 'launching' ? message : plan.updateRequired ? '업데이트 설치를 누르면 필요한 파일만 받습니다.' : '필요한 파일이 모두 준비되어 있습니다.'}</p>
             {:else}
               <p class="hint">먼저 업데이트 확인을 눌러 현재 상태를 확인하세요.</p>
             {/if}

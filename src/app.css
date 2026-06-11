@@ -83,7 +83,8 @@ button:focus-visible {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent), #1b1a16;
   user-select: none;
-  cursor: default;
+  cursor: move;
+  -webkit-app-region: drag;
 }
 
 .window-brand {
@@ -119,6 +120,7 @@ button:focus-visible {
   height: 100%;
   display: flex;
   flex: 0 0 auto;
+  -webkit-app-region: no-drag;
 }
 
 .window-button {
@@ -130,6 +132,7 @@ button:focus-visible {
   cursor: pointer;
   font-size: 18px;
   line-height: 1;
+  -webkit-app-region: no-drag;
 }
 
 .window-button.minimize {
