@@ -65,7 +65,7 @@ jobs:
           if (-not $setup) { throw "Windows setup.exe bundle was not found" }
           $sigPath = "$($setup.FullName).sig"
           if (-not (Test-Path $sigPath)) { throw "Updater signature was not found: $sigPath" }
-          $assetName = [uri]::EscapeDataString($setup.Name)
+          $assetName = [uri]::EscapeDataString(($setup.Name -replace ' ', '.'))
           $metadata = [ordered]@{
             version = $config.version
             notes = "TownRise Launcher $($config.version)"
