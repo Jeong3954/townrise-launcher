@@ -39,6 +39,18 @@ pub struct InstallSummary {
     pub total_bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    pub phase: String,
+    pub current_file: Option<String>,
+    pub completed_files: usize,
+    pub total_files: usize,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub percent: u8,
+}
+
 #[derive(Debug, Error)]
 pub enum UpdateError {
     #[error("manifest request failed: {0}")]
@@ -112,27 +124,95 @@ pub async fn install_updates_to(
     install_manifest_updates(&manifest, instance_dir, cache_dir).await
 }
 
+pub async fn install_updates_to_with_progress<F>(
+    manifest_url: &str,
+    instance_dir: &Path,
+    cache_dir: &Path,
+    on_progress: F,
+) -> Result<InstallSummary, UpdateError>
+where
+    F: FnMut(UpdateProgress),
+{
+    let manifest = fetch_manifest(manifest_url).await?;
+    install_manifest_updates_with_progress(&manifest, instance_dir, cache_dir, on_progress).await
+}
+
 pub async fn install_manifest_updates(
     manifest: &Manifest,
     instance_dir: &Path,
     cache_dir: &Path,
 ) -> Result<InstallSummary, UpdateError> {
+    install_manifest_updates_with_progress(manifest, instance_dir, cache_dir, |_| {}).await
+}
+
+pub async fn install_manifest_updates_with_progress<F>(
+    manifest: &Manifest,
+    instance_dir: &Path,
+    cache_dir: &Path,
+    mut on_progress: F,
+) -> Result<InstallSummary, UpdateError>
+where
+    F: FnMut(UpdateProgress),
+{
     validate_manifest(manifest)?;
     tokio::fs::create_dir_all(instance_dir).await?;
     tokio::fs::create_dir_all(cache_dir).await?;
 
     let mut installed = 0;
     let mut skipped = 0;
-    let mut total_bytes = 0;
+    let mut downloaded_bytes = 0;
+    let mut installed_bytes = 0;
+    let mut completed_files = 0;
+    let total_bytes = manifest.files.iter().map(|file| file.size).sum();
+    let total_files = manifest.files.len();
+
+    emit_progress(
+        &mut on_progress,
+        "starting",
+        None,
+        completed_files,
+        total_files,
+        downloaded_bytes,
+        total_bytes,
+    );
 
     for file in &manifest.files {
         let relative = file.safe_relative_path()?;
         let target = instance_dir.join(&relative);
+        emit_progress(
+            &mut on_progress,
+            "checking",
+            Some(file.path.clone()),
+            completed_files,
+            total_files,
+            downloaded_bytes,
+            total_bytes,
+        );
         if classify_file(&target, file).await? == UpdateFileStatus::Current {
             skipped += 1;
+            completed_files += 1;
+            downloaded_bytes += file.size;
+            emit_progress(
+                &mut on_progress,
+                "skipped",
+                Some(file.path.clone()),
+                completed_files,
+                total_files,
+                downloaded_bytes,
+                total_bytes,
+            );
             continue;
         }
 
+        emit_progress(
+            &mut on_progress,
+            "downloading",
+            Some(file.path.clone()),
+            completed_files,
+            total_files,
+            downloaded_bytes,
+            total_bytes,
+        );
         let tmp = cache_dir.join(temp_name(file));
         download_file(file, &tmp).await?;
         verify_download(file, &tmp).await?;
@@ -142,14 +222,35 @@ pub async fn install_manifest_updates(
         }
         tokio::fs::rename(&tmp, &target).await?;
         installed += 1;
-        total_bytes += file.size;
+        completed_files += 1;
+        downloaded_bytes += file.size;
+        installed_bytes += file.size;
+        emit_progress(
+            &mut on_progress,
+            "installed",
+            Some(file.path.clone()),
+            completed_files,
+            total_files,
+            downloaded_bytes,
+            total_bytes,
+        );
     }
+
+    emit_progress(
+        &mut on_progress,
+        "finished",
+        None,
+        completed_files,
+        total_files,
+        downloaded_bytes,
+        total_bytes,
+    );
 
     Ok(InstallSummary {
         version: manifest.version.clone(),
         installed,
         skipped,
-        total_bytes,
+        total_bytes: installed_bytes,
     })
 }
 
@@ -212,6 +313,33 @@ async fn sha256_file(path: &Path) -> Result<String, UpdateError> {
 fn temp_name(file: &ManifestFile) -> PathBuf {
     let safe_name = file.path.replace(['/', '\\'], "_");
     PathBuf::from(format!("{safe_name}.download"))
+}
+
+fn emit_progress<F>(
+    on_progress: &mut F,
+    phase: &str,
+    current_file: Option<String>,
+    completed_files: usize,
+    total_files: usize,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+) where
+    F: FnMut(UpdateProgress),
+{
+    let percent = downloaded_bytes
+        .saturating_mul(100)
+        .checked_div(total_bytes)
+        .unwrap_or(100)
+        .min(100) as u8;
+    on_progress(UpdateProgress {
+        phase: phase.to_string(),
+        current_file,
+        completed_files,
+        total_files,
+        downloaded_bytes,
+        total_bytes,
+        percent,
+    });
 }
 
 #[cfg(test)]
