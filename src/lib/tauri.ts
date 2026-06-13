@@ -62,7 +62,10 @@ export type LoginStart = {
   message: string;
 };
 
-export type LoginPollStatus = "Pending" | "SlowDown" | { Complete: MinecraftSession };
+export type LoginPollStatus =
+  | "Pending"
+  | "SlowDown"
+  | { Complete: MinecraftSession };
 
 const fallbackPlan: UpdatePlan = {
   version: "확인 전",
@@ -86,7 +89,7 @@ export async function installLauncherSelfUpdate(
   if (!isTauri()) return false;
 
   onProgress({ phase: "checking" });
-  const update = await check();
+  const update = await check({ timeout: 60_000 });
   if (!update) {
     onProgress({ phase: "current" });
     return false;
@@ -94,8 +97,7 @@ export async function installLauncherSelfUpdate(
 
   let downloadedBytes = 0;
   let totalBytes: number | undefined;
-  onProgress({ phase: "downloading", version: update.version });
-  await update.downloadAndInstall((event: DownloadEvent) => {
+  const progressHandler = (event: DownloadEvent) => {
     if (event.event === "Started") {
       downloadedBytes = 0;
       totalBytes = event.data.contentLength;
@@ -121,7 +123,21 @@ export async function installLauncherSelfUpdate(
         totalBytes,
       });
     }
-  });
+  };
+
+  try {
+    onProgress({ phase: "downloading", version: update.version });
+    await update.download(progressHandler, { timeout: 5 * 60_000 });
+    onProgress({
+      phase: "installing",
+      version: update.version,
+      downloadedBytes,
+      totalBytes,
+    });
+    await update.install();
+  } finally {
+    await update.close();
+  }
 
   onProgress({
     phase: "restarting",
@@ -167,12 +183,13 @@ export async function beginMicrosoftLogin(): Promise<LoginStart> {
   if (!isTauri()) {
     return {
       deviceCode: "dev-preview",
-      userCode: "DEV-PREVIEW",
-      verificationUri: "https://www.microsoft.com/link",
-      verificationUriComplete: null,
+      userCode: "",
+      verificationUri: "about:blank",
+      verificationUriComplete: "about:blank",
       expiresIn: 900,
       interval: 5,
-      message: "Tauri 앱에서 Microsoft 로그인을 사용할 수 있습니다.",
+      message:
+        "Tauri 앱에서는 공식 Microsoft 로그인 화면이 브라우저로 열립니다.",
     };
   }
   return invoke<LoginStart>("begin_microsoft_login");

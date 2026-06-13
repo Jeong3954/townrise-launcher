@@ -185,6 +185,7 @@
     try {
       loginStart = await beginMicrosoftLogin();
       message = '브라우저에서 Microsoft 로그인을 완료해 주세요.';
+      await onOpenLoginUrl();
       pollLoginUntilComplete(loginStart.deviceCode, loginStart.interval);
     } catch (error) {
       state = 'error';
@@ -371,16 +372,24 @@
           <p class="intro">{message}</p>
         </div>
         {#if loginStart}
-          <div class="login-code-card">
-            <span>입력 코드</span>
-            <strong>{loginStart.userCode}</strong>
-            <p>{loginStart.verificationUri} 에 접속해 코드를 입력하세요.</p>
-          </div>
-          <button class="pixel-button primary login-link" on:click={onOpenLoginUrl}>Microsoft 로그인 열기</button>
+          {#if loginStart.userCode}
+            <div class="login-code-card">
+              <span>입력 코드</span>
+              <strong>{loginStart.userCode}</strong>
+              <p>{loginStart.verificationUri} 에 접속해 코드를 입력하세요.</p>
+            </div>
+          {:else}
+            <div class="login-code-card browser-login-card">
+              <span>브라우저 로그인</span>
+              <strong>Microsoft</strong>
+              <p>공식 Microsoft 로그인 창에서 계정을 선택하고 권한을 확인하세요.</p>
+            </div>
+          {/if}
+          <button class="pixel-button primary login-link" on:click={onOpenLoginUrl}>Microsoft 로그인 다시 열기</button>
           <p class="hint">로그인이 끝나면 런처가 자동으로 계정 확인을 완료합니다.</p>
         {:else}
-          <button class="pixel-button primary" on:click={onBeginLogin}>Microsoft 계정으로 로그인</button>
-          <p class="hint">Microsoft OAuth → Xbox Live/XSTS → Minecraft Services 순서로 정품 Java 프로필을 확인합니다.</p>
+          <button class="pixel-button primary" on:click={onBeginLogin}>Microsoft 로그인 열기</button>
+          <p class="hint">브라우저의 공식 Microsoft 로그인 화면을 사용한 뒤 Minecraft Java 보유 여부를 확인합니다.</p>
         {/if}
       </section>
     </main>
